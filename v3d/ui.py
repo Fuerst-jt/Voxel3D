@@ -100,11 +100,28 @@ class MainWindow(QtWidgets.QMainWindow):
         zmq_layout.addRow(self.btn_sub)
         right_layout.addWidget(zmq_group)
 
+        # Mode: browse / select
+        mode_group = QtWidgets.QGroupBox('Mode')
+        mode_layout = QtWidgets.QHBoxLayout(mode_group)
+        self.mode_browse = QtWidgets.QRadioButton('Browse')
+        self.mode_browse.setChecked(True)
+        self.mode_select = QtWidgets.QRadioButton('Select')
+        mode_layout.addWidget(self.mode_browse)
+        mode_layout.addWidget(self.mode_select)
+        right_layout.addWidget(mode_group)
+
+        # connect mode changes to update interaction
+        self.mode_browse.toggled.connect(self._on_mode_changed)
+
         # Info & log
         info_group = QtWidgets.QGroupBox('Info')
         info_layout = QtWidgets.QVBoxLayout(info_group)
         self.info_label = QtWidgets.QLabel('Points: 0    Segments: 0')
         info_layout.addWidget(self.info_label)
+        self.selected_info = QtWidgets.QTextEdit()
+        self.selected_info.setReadOnly(True)
+        self.selected_info.setFixedHeight(120)
+        info_layout.addWidget(self.selected_info)
         right_layout.addWidget(info_group)
 
         log_group = QtWidgets.QGroupBox('Log')
@@ -133,6 +150,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.renderer = SceneRenderer(self.vtk_widget)
         else:
             self.renderer = None
+        # install event filter to capture mouse events for selection
+        if self.vtk_widget is not None:
+            self.vtk_widget.installEventFilter(self)
     
 
     # status/log helpers
@@ -183,6 +203,49 @@ class MainWindow(QtWidgets.QMainWindow):
         self.renderer.render(self.model)
         self._update_info()
         self.on_status('Generated random test data')
+
+    def eventFilter(self, obj, event):
+        # intercept right-clicks on vtk widget when in select mode
+        if obj is getattr(self, 'vtk_widget', None):
+            # Prevent VTK from starting right-button interactions (pan/zoom)
+            # when in Select mode by consuming the press and move events.
+            if self.mode_select.isChecked():
+                if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.RightButton:
+                    return True
+                if event.type() == QtCore.QEvent.MouseMove:
+                    # if right button is held, consume move to avoid interaction
+                    buttons = event.buttons()
+                    if buttons & QtCore.Qt.RightButton:
+                        return True
+                if event.type() == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.RightButton:
+                    if self.renderer is not None:
+                        pos = event.pos()
+                        # multi-select only when Alt is pressed. Some Linux WMs grab Alt
+                        # so use global QApplication keyboardModifiers() as a fallback.
+                        mods = QtWidgets.QApplication.keyboardModifiers()
+                        alt = bool(mods & QtCore.Qt.AltModifier)
+                        pid = self.renderer.pick_and_select(pos.x(), pos.y(), multi=alt)
+                        if pid is not None:
+                            # show latest point attributes
+                            try:
+                                pt = self.model.points[pid]
+                                self.selected_info.setPlainText(json.dumps(pt, indent=2))
+                            except Exception:
+                                self.selected_info.setPlainText(str(pid))
+                    return True
+        return super().eventFilter(obj, event)
+
+    def _on_mode_changed(self, checked: bool):
+        # checked == True means Browse selected; False means Select
+        if not hasattr(self, 'renderer') or self.renderer is None:
+            return
+        try:
+            # Do not change the interactor style here. Right-button interaction
+            # is suppressed via the event filter in Select mode so other
+            # interactions (left-button rotate, etc.) remain available.
+            return
+        except Exception:
+            pass
 
     def export_json(self):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, 'Export JSON', filter='JSON files (*.json)')

@@ -68,6 +68,42 @@ class SceneRenderer:
         self.ren.AddActor(self.point_actor)
         self.actors.append(self.point_actor)
 
+        # point locator for picking (built after points are set)
+        self.point_locator = vtk.vtkPointLocator()
+
+        # selection pipeline: points for selected indices
+        self.selection_points = vtk.vtkPoints()
+        self.selection_poly = vtk.vtkPolyData()
+        self.selection_poly.SetPoints(self.selection_points)
+
+        self.selection_scales = vtk.vtkFloatArray()
+        self.selection_scales.SetName('Scale')
+        self.selection_poly.GetPointData().AddArray(self.selection_scales)
+
+        self.selection_colors = vtk.vtkUnsignedCharArray()
+        self.selection_colors.SetNumberOfComponents(3)
+        self.selection_colors.SetName('Color')
+        self.selection_poly.GetPointData().SetScalars(self.selection_colors)
+
+        self.selection_glyph_mapper = vtk.vtkGlyph3DMapper()
+        self.selection_glyph_mapper.SetInputData(self.selection_poly)
+        self.selection_glyph_mapper.SetSourceConnection(self.sphere.GetOutputPort())
+        self.selection_glyph_mapper.ScalingOn()
+        self.selection_glyph_mapper.SetScaleArray('Scale')
+        self.selection_glyph_mapper.SetColorModeToDirectScalars()
+
+        self.selection_actor = vtk.vtkActor()
+        self.selection_actor.SetMapper(self.selection_glyph_mapper)
+        self.ren.AddActor(self.selection_actor)
+        self.actors.append(self.selection_actor)
+
+        # track selected point ids
+        self.selected_ids = []
+
+        # keep original per-point scales and colors so we can restore on deselect
+        self._orig_scales = []
+        self._orig_colors = []
+
         # line actor placeholders
         self.line_poly = vtk.vtkPolyData()
         self.line_points = vtk.vtkPoints()
@@ -88,7 +124,7 @@ class SceneRenderer:
         self.actors.append(self.line_actor)
 
         # add XOY grid (spacing 1.0 m, extent +/-10m by default)
-        self.grid_actor = self._create_grid(extent=10, spacing=1.0)
+        self.grid_actor = self._create_grid(extent=100, spacing=1.0)
         if self.grid_actor is not None:
             self.ren.AddActor(self.grid_actor)
 
@@ -114,7 +150,6 @@ class SceneRenderer:
         """
         if vtk is None:
             return None
-
         pts = vtk.vtkPoints()
         lines = vtk.vtkCellArray()
 
@@ -175,6 +210,10 @@ class SceneRenderer:
         self.point_scales.Reset()
         self.point_colors.Reset()
 
+        # reset original lists
+        self._orig_scales = []
+        self._orig_colors = []
+
         for p in pts:
             x, y, z = float(p.get('x', 0)), float(p.get('y', 0)), float(p.get('z', 0))
             idp = self.point_points.InsertNextPoint(x, y, z)
@@ -182,8 +221,18 @@ class SceneRenderer:
             self.point_scales.InsertNextValue(scale)
             rgb = _to_uchar_rgb(p.get('color', [1, 1, 1, 1]))
             self.point_colors.InsertNextTuple3(rgb[0], rgb[1], rgb[2])
+            # store originals so we can restore on deselect
+            self._orig_scales.append(scale)
+            self._orig_colors.append((rgb[0], rgb[1], rgb[2]))
 
         self.point_poly.Modified()
+
+        # rebuild locator for picking
+        try:
+            self.point_locator.SetDataSet(self.point_poly)
+            self.point_locator.BuildLocator()
+        except Exception:
+            pass
 
         # batch lines
         self.line_points.Reset()
@@ -206,7 +255,127 @@ class SceneRenderer:
             self.line_colors.InsertNextTuple3(rgb[0], rgb[1], rgb[2])
 
         self.line_poly.Modified()
+        # update selection actor (keep selection after re-render)
+        self._update_selection_actor()
 
         # reset camera and render
         self.ren.ResetCamera()
         self.interactor_widget.GetRenderWindow().Render()
+
+    def _update_selection_actor(self):
+        # Update the main point arrays to reflect selection highlights and
+        # restore original values for deselected points.
+        n = self.point_points.GetNumberOfPoints()
+        # ensure orig arrays length matches; if not, rebuild from arrays
+        if len(self._orig_scales) != n:
+            try:
+                self._orig_scales = [self.point_scales.GetValue(i) for i in range(n)]
+            except Exception:
+                self._orig_scales = [0.05 for _ in range(n)]
+        if len(self._orig_colors) != n:
+            try:
+                self._orig_colors = [tuple(int(c) for c in self.point_colors.GetTuple(i)) for i in range(n)]
+            except Exception:
+                self._orig_colors = [(255, 255, 255) for _ in range(n)]
+
+        # restore all to original
+        for i in range(n):
+            try:
+                self.point_scales.SetValue(i, float(self._orig_scales[i]))
+            except Exception:
+                pass
+            try:
+                r, g, b = self._orig_colors[i]
+                self.point_colors.SetTuple3(i, int(r), int(g), int(b))
+            except Exception:
+                pass
+
+        # apply highlight (enlarge + red) for selected ids
+        for pid in list(self.selected_ids):
+            if pid < 0 or pid >= n:
+                continue
+            try:
+                new_scale = float(self._orig_scales[pid]) * 2.5
+                self.point_scales.SetValue(pid, new_scale)
+                self.point_colors.SetTuple3(pid, 255, 0, 0)
+            except Exception:
+                continue
+
+        # mark modified
+        self.point_poly.Modified()
+
+    def pick_and_select(self, display_x: int, display_y: int, multi: bool = True):
+        """Pick nearest point from display coordinates (Qt coords) and add to selection.
+
+        Returns selected point index or None.
+        """
+        if vtk is None:
+            return None
+        # convert Qt y to VTK display y (origin at lower-left)
+        height = self.interactor_widget.height()
+        vtk_y = height - display_y
+
+        picker = vtk.vtkCellPicker()
+        # increase tolerance to make picking easier
+        picker.SetTolerance(0.01)
+        ok = picker.Pick(display_x, vtk_y, 0, self.ren)
+        pick_pos = picker.GetPickPosition()
+
+        # Prefer candidates within a small world-space radius, then pick
+        # the one with smallest screen-space distance to the click.
+        pid = -1
+        candidates = []
+        try:
+            idlist = vtk.vtkIdList()
+            search_radius = 4.0
+            self.point_locator.FindPointsWithinRadius(search_radius, pick_pos, idlist)
+            for ii in range(idlist.GetNumberOfIds()):
+                cid = idlist.GetId(ii)
+                px, py, pz = self.point_points.GetPoint(cid)
+                # convert world -> display
+                self.ren.SetWorldPoint(px, py, pz, 1.0)
+                self.ren.WorldToDisplay()
+                dpx, dpy, _ = self.ren.GetDisplayPoint()
+                dxs = dpx - display_x
+                dys = dpy - vtk_y
+                candidates.append((dxs*dxs + dys*dys, cid))
+        except Exception:
+            candidates = []
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            # threshold in pixels (20 px) — allow a larger tolerance for easier picking
+            if candidates[0][0] > (20*20):
+                return None
+            pid = candidates[0][1]
+        else:
+            # fallback: use locator closest point in world-space
+            try:
+                pid = self.point_locator.FindClosestPoint(pick_pos)
+            except Exception:
+                pid = -1
+            if pid < 0:
+                return None
+            px, py, pz = self.point_points.GetPoint(pid)
+            dx = px - pick_pos[0]
+            dy = py - pick_pos[1]
+            dz = pz - pick_pos[2]
+            dist2 = dx*dx + dy*dy + dz*dz
+            if dist2 > (2.0 * 2.0):
+                return None
+
+        # selection logic: if multi (Alt pressed) then toggle membership
+        if not multi:
+            self.selected_ids = [pid]
+        else:
+            if pid in self.selected_ids:
+                try:
+                    self.selected_ids.remove(pid)
+                except ValueError:
+                    pass
+            else:
+                self.selected_ids.append(pid)
+
+        self._update_selection_actor()
+        self.interactor_widget.GetRenderWindow().Render()
+        return pid
