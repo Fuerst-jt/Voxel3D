@@ -1,3 +1,7 @@
 .venv/
 __pycache__/
 voxel3d.egg-info/
+*.egg-info
+build/
+dist/
+.eggs/

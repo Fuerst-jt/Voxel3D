@@ -4,8 +4,13 @@ Provides buttons: Load, Clear, Generate Test Data, Export JSON, Start/Stop SUB.
 """
 import sys
 import json
+import subprocess
 from PySide6 import QtCore, QtWidgets, QtGui
-import pyqtgraph.opengl as gl
+
+try:
+    from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+except Exception:
+    QVTKRenderWindowInteractor = None
 
 from .scene_model import SceneModel
 from .renderer import SceneRenderer
@@ -25,16 +30,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(w)
         main_layout = QtWidgets.QHBoxLayout(w)
 
-        # LEFT: 3D view
+        # LEFT: 3D view (VTK)
         left_widget = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_widget)
-        self.view = gl.GLViewWidget()
-        self.view.setCameraPosition(distance=20)
-        left_layout.addWidget(self.view)
-        g = gl.GLGridItem()
-        g.setSize(20,20)
-        g.setSpacing(1,1)
-        self.view.addItem(g)
+        if QVTKRenderWindowInteractor is None:
+            # show a placeholder with clear install instructions when VTK is not available
+            ph = QtWidgets.QWidget()
+            ph_layout = QtWidgets.QVBoxLayout(ph)
+            placeholder = QtWidgets.QLabel('VTK not available. Please install required dependency before running the application.')
+            placeholder.setWordWrap(True)
+            placeholder.setAlignment(QtCore.Qt.AlignCenter)
+            ph_layout.addWidget(placeholder)
+            cmd = "pip install -r requirements.txt"
+            copy_btn = QtWidgets.QPushButton('Copy install command')
+            def _copy():
+                clipboard = QtWidgets.QApplication.clipboard()
+                clipboard.setText(cmd)
+                self.on_status('Install command copied to clipboard')
+            copy_btn.clicked.connect(_copy)
+            ph_layout.addWidget(copy_btn)
+            ph_layout.addStretch()
+            left_layout.addWidget(ph)
+            self.vtk_widget = None
+            self._left_placeholder = ph
+        else:
+            self.vtk_widget = QVTKRenderWindowInteractor(left_widget)
+            left_layout.addWidget(self.vtk_widget)
+            # initialize interactor
+            self.vtk_widget.Initialize()
+            self.vtk_widget.Start()
+
         main_layout.addWidget(left_widget, 1)
 
         # RIGHT: controls
@@ -103,8 +128,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Model / renderer / zmq
         self.model = SceneModel()
-        self.renderer = SceneRenderer(self.view)
         self.sub = None
+        if self.vtk_widget is not None:
+            self.renderer = SceneRenderer(self.vtk_widget)
+        else:
+            self.renderer = None
+    
 
     # status/log helpers
     def on_status(self, text: str):

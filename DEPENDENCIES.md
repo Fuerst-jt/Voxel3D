@@ -2,7 +2,7 @@
 
 ## 依赖库
 - PySide6 — Qt for Python (GUI)
-- pyqtgraph — plotting + OpenGL 3D visualization
+- vtk — VTK for 3D 渲染与互动（替代 pyqtgraph 的渲染部分）
 - pyzmq — ZeroMQ bindings (PUB/SUB)
 - numpy — numerical arrays
 
@@ -17,7 +17,7 @@ pip install -r requirements.txt
 ├─ v3d/                  # 模块化包
 │  ├─ __init__.py
 │  ├─ scene_model.py     # 数据模型（points / segments / 随机生成 / 导出）
-│  ├─ renderer.py        # 将 SceneModel 渲染到 GLViewWidget（解耦）
+│  ├─ renderer.py        # 基于 VTK 的渲染器（高性能批量渲染）
 │  ├─ zmq_sub.py         # ZMQ Subscriber（QThread）
 │  └─ ui.py              # MainWindow：组合 Model + Renderer + ZMQ
 ├─ main.py               # 程序入口（极简）
