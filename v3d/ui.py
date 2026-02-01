@@ -220,11 +220,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 if event.type() == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.RightButton:
                     if self.renderer is not None:
                         pos = event.pos()
-                        # multi-select only when Alt is pressed. Some Linux WMs grab Alt
-                        # so use global QApplication keyboardModifiers() as a fallback.
+                        # multi-select only when Ctrl is pressed. Alt may be grabbed
+                        # by some WMs, so prefer Ctrl and use global keyboard state.
                         mods = QtWidgets.QApplication.keyboardModifiers()
-                        alt = bool(mods & QtCore.Qt.AltModifier)
-                        pid = self.renderer.pick_and_select(pos.x(), pos.y(), multi=alt)
+                        ctrl = bool(mods & QtCore.Qt.ControlModifier)
+                        pid = self.renderer.pick_and_select(pos.x(), pos.y(), multi=ctrl)
                         if pid is not None:
                             # show latest point attributes
                             try:

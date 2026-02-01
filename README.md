@@ -50,6 +50,23 @@ python main.py
 - ZMQ 发布/订阅需要时间建立连接（PUB/SUB）。如发现 GUI 未及时接收到消息，稍等 0.2s 再观察。
 - 本项目改为使用 `vtk` 渲染：如果在无头/容器环境运行，可能需要额外的配置或使用 OSMesa。若遇到性能问题，建议使用 `vtk` 的批量渲染方案（已在 `v3d.renderer` 中实现）。
 
+## 版本与打包
+
+- 当前包版本在 `v3d.__version__` 与 `setup.cfg` 中声明为 `0.1.0`。
+- 打包说明：使用 `PyInstaller` 可以生成单文件可执行程序（将尽量打包依赖库以减少运行时依赖）。示例脚本位于 `scripts/pack.sh`（Linux/macOS）和 `scripts/pack_windows.bat`（Windows）。
+
+示例（Linux/macOS，在对应平台运行）：
+
+```bash
+./scripts/pack.sh linux
+```
+
+注意事项：
+- PyInstaller 必须在目标平台上运行以生成正确的平台可执行文件（在 macOS 上构建 macOS 二进制，在 Windows 上构建 Windows 二进制）。
+- VTK 包含大型二进制组件，打包后可执行文件体积会较大；某些系统级依赖（如 OpenGL 驱动）仍然会使用系统实现，无法完全移除。
+
+如果你希望我自动化 CI 打包工作流（GitHub Actions 在三平台构建），我可以继续添加。
+
 ---
 
 如需我把功能扩展为增量更新（只增/删改单个点）、保存截图或录制轨迹，我可以继续实现。
